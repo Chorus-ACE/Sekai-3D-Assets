@@ -47,20 +47,26 @@ class Source:
  def index(self):
   v=self.version;region=self.region
   if region in ('jp','en'):
-   self.session.headers.update({'Content-Type':'application/octet-stream','Accept':'application/octet-stream','User-Agent':'UnityPlayer/2022.3.21f1','X-Platform':'Android','X-App-Version':v['appVersion'],'X-App-Hash':v['appHash']})
+   self.session.headers.update({'Content-Type':'application/octet-stream','Accept':'application/octet-stream','User-Agent':'UnityPlayer/2022.3.21f1','X-Platform':'Android','X-Unity-Version':'2022.3.21f1','X-App-Version':v['appVersion'],'X-App-Hash':v['appHash']})
    if region=='jp':
     _,headers=get(self.session,'https://issue.sekai.colorfulpalette.org/api/signature',method='POST');self.session.headers['Cookie']=headers['Set-Cookie']
     host=self.unpack(get(self.session,f'https://game-version.sekai.colorfulpalette.org/{v["appVersion"]}/{v["appHash"]}')[0])['assetbundleHostHash']
     origin=f'https://production-{host}-assetbundle';suffix='.sekai.colorfulpalette.org';index_suffix=f'{v["assetVersion"]}/{v["assetHash"]}/os/android'
    else:
-    origin=f'https://n-{v.get("systemProfile","production")}-assetbundle';suffix='.sekai-en.com';index_suffix=f'{v["assetVersion"]}/os/android'
+    game=self.unpack(get(self.session,f'https://game-version.sekai-en.com/{v["appVersion"]}/{v["appHash"]}')[0])
+    origin=f'https://n-{game["profile"]}-{game["assetbundleHostHash"]}-assetbundle';suffix='.sekai-en.com';index_suffix=f'{v["assetVersion"]}/os/android'
    url=f'{origin}-info{suffix}/api/version/{index_suffix}'
    self.base=f'{origin}{suffix}/{v["assetVersion"]}/{v["assetHash"]}/android/'
   else:
    cdn,path={'tw':('https://lf16-mkovscdn-sg.bytedgame.com/obj/sf-game-alisg/gdl_app_5245','online'),'kr':('https://lf19-mkkr.bytedgame.com/obj/sf-game-alisg/gdl_app_292248','kr_online'),'cn':('https://lf3-mkcncdn-tos.dailygn.com/obj/sf-game-lf/gdl_app_5236','cn_online')}[region]
    area='Mainland' if region=='cn' else 'Oversea'
-   number=int(get(self.session,f'{cdn.replace("sf-game","rt-game")}/{area}/{v["appVersion"]}/Release/{path}/ios/version',limit=1024)[0])
-   self.base=f'{cdn}/AssetBundle/{v["appVersion"]}/Release/{path}/'
+   base_version=v['appVersion']
+   try:number=int(get(self.session,f'{cdn.replace("sf-game","rt-game")}/{area}/{base_version}/Release/{path}/ios/version',limit=1024)[0])
+   except requests.HTTPError as error:
+    if error.response.status_code!=404:raise
+    base_version='.'.join(v['appVersion'].split('.')[:2])+'.0'
+    number=int(get(self.session,f'{cdn.replace("sf-game","rt-game")}/{area}/{base_version}/Release/{path}/ios/version',limit=1024)[0])
+   self.base=f'{cdn}/AssetBundle/{base_version}/Release/{path}/'
    url=f'{self.base}ios{number}/AssetBundleInfoNew.json'
   return self.unpack(get(self.session,url)[0])['bundles']
  def download(self,key,entry,target):
@@ -141,7 +147,8 @@ def update_region(region,args,work,publisher,budget):
  def export(*flags):
   log=region_dir/'export.log'
   with log.open('w') as f:
-   run(['dotnet',HARUKI/'exporter/bin/Release/net9.0/Haruki-3D-Exporter.dll',*flags,'--master',master,'--asset-root',assets,'--out',out,'--png-optimize','off'],stdout=f,stderr=subprocess.STDOUT)
+   result=subprocess.run(list(map(str,['dotnet',HARUKI/'exporter/bin/Release/net9.0/Haruki-3D-Exporter.dll',*flags,'--master',master,'--asset-root',assets,'--out',out,'--png-optimize','off'])),stdout=f,stderr=subprocess.STDOUT)
+  if result.returncode:raise RuntimeError(log.read_text()[-1500:])
  def prepare(keys):
   deps=closure(index,keys)
   if sum(index[k]['fileSize'] for k in deps)>256*1024*1024:raise ValueError('Per-task bundle budget exceeded')
@@ -194,6 +201,7 @@ def update_region(region,args,work,publisher,budget):
     for p in assets.rglob('*.bundle'):
      if p.stat().st_size:p.write_bytes(b'')
  ready=[]
+ character_names={x['id']: x.get('firstName','')+x.get('givenName','') for x in read(master/'gameCharacters.json',[])}
  for role in catalog['roles']:
   rolekey=f"{role['characterId']}:{role['unit']}";selected=[x['entry'] for k,x in state['done'].items() if k in current and current[k]['characterId']==role['characterId'] and current[k]['unit']==role['unit']]
   if not all(any(e['costume3dId']==role[f] for e in selected) for f in ('bodyCostume3dId','headCostume3dId','hairCostume3dId')):continue
@@ -205,7 +213,7 @@ def update_region(region,args,work,publisher,budget):
     if motion in index:keys.append(motion)
     prepare(keys);export('--emit-role-runtimes','--role-character3d-id',str(role['roleId']));publish_tree();state['roles'][rolekey]=role_fp
    except Exception:continue
-  ready.append({**role,'id':rolekey,'parts':[{'id':key(e),'costumeID':e['costume3dId'],'type':e['partType'],'name':e['name'],'colorName':e.get('colorName','')} for e in selected]})
+  ready.append({**role,'id':rolekey,'name':character_names.get(role['characterId'],str(role['characterId'])),'parts':[{'id':key(e),'costumeID':e['costume3dId'],'type':e['partType'],'name':e['name'],'colorName':e.get('colorName','')} for e in selected]})
   scoped=out/f"parts/by-role/{role['characterId']}/{role['unit']}";scoped.mkdir(parents=True,exist_ok=True)
   encode(scoped/'part-registry.msgpack.br',{'version':2,'entries':selected})
   encode(scoped/'runtime-role-catalog.msgpack.br',{**catalog,'roles':[role]})

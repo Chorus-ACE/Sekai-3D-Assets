@@ -65,6 +65,7 @@ jobs:
             .work/summary.json
             .work/*/export.log
           retention-days: 7
+          include-hidden-files: true
       - name: Surface regional failures
         if: steps.export.outcome == 'failure'
         run: exit 1
