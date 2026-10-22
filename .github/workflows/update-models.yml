@@ -1,0 +1,70 @@
+name: Update 3D models
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: Maximum part conversions per run (1–100)
+        default: '32'
+        required: true
+permissions:
+  contents: write
+concurrency:
+  group: model-publication
+  cancel-in-progress: false
+jobs:
+  update:
+    runs-on: macos-15
+    timeout-minutes: 100
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install requests==2.32.3 pycryptodome==3.23.0 msgpack==1.1.0
+      - name: Test object publication contracts
+        run: python -m unittest discover -s tests -v
+      - uses: actions/cache@v4
+        with:
+          path: .vendor
+          key: haruki-macos-v1-1e0abc65-70e6ec3e
+      - name: Prepare pinned exporter
+        run: bash scripts/setup.sh
+      - name: Export bounded increment
+        id: export
+        continue-on-error: true
+        env:
+          PART_LIMIT: ${{ inputs.limit || '32' }}
+        run: python scripts/update.py --limit "$PART_LIMIT" --publish
+      - name: Commit manifests after object upload
+        if: always() && steps.export.outcome != 'skipped'
+        run: |
+          mkdir -p regions state
+          git add regions state
+          if ! git diff --cached --quiet; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'Update available 3D models'
+            git push
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conversion-diagnostics
+          path: |
+            .work/summary.json
+            .work/*/export.log
+          retention-days: 7
+      - name: Surface regional failures
+        if: steps.export.outcome == 'failure'
+        run: exit 1
