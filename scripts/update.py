@@ -50,11 +50,13 @@ class Source:
    self.session.headers.update({'Content-Type':'application/octet-stream','Accept':'application/octet-stream','User-Agent':'UnityPlayer/2022.3.21f1','X-Platform':'Android','X-Unity-Version':'2022.3.21f1','X-App-Version':v['appVersion'],'X-App-Hash':v['appHash']})
    if region=='jp':
     _,headers=get(self.session,'https://issue.sekai.colorfulpalette.org/api/signature',method='POST');self.session.headers['Cookie']=headers['Set-Cookie']
-    host=self.unpack(get(self.session,f'https://game-version.sekai.colorfulpalette.org/{v["appVersion"]}/{v["appHash"]}')[0])['assetbundleHostHash']
+    known=read(ROOT/'providers.json',{}).get('jp',{})
+    if known.get('appVersion')==v['appVersion']:host=known['assetHost']
+    else:host=self.unpack(get(self.session,f'https://game-version.sekai.colorfulpalette.org/{v["appVersion"]}/{v["appHash"]}')[0])['assetbundleHostHash']
     origin=f'https://production-{host}-assetbundle';suffix='.sekai.colorfulpalette.org';index_suffix=f'{v["assetVersion"]}/{v["assetHash"]}/os/android'
    else:
     game=self.unpack(get(self.session,f'https://game-version.sekai-en.com/{v["appVersion"]}/{v["appHash"]}')[0])
-    origin=f'https://n-{game["profile"]}-{game["assetbundleHostHash"]}-assetbundle';suffix='.sekai-en.com';index_suffix=f'{v["assetVersion"]}/os/android'
+    origin=f'https://n-{game["profile"]}-{game["assetbundleHostHash"]}-assetbundle';suffix='.sekai-en.com';index_suffix=f'{v["assetVersion"]}/{v["assetHash"]}/os/android'
    url=f'{origin}-info{suffix}/api/version/{index_suffix}'
    self.base=f'{origin}{suffix}/{v["assetVersion"]}/{v["assetHash"]}/android/'
   else:
@@ -68,7 +70,11 @@ class Source:
     number=int(get(self.session,f'{cdn.replace("sf-game","rt-game")}/{area}/{base_version}/Release/{path}/ios/version',limit=1024)[0])
    self.base=f'{cdn}/AssetBundle/{base_version}/Release/{path}/'
    url=f'{self.base}ios{number}/AssetBundleInfoNew.json'
-  return self.unpack(get(self.session,url)[0])['bundles']
+  try:data=get(self.session,url)[0]
+  except requests.HTTPError as error:
+   if region!='en' or error.response.status_code not in (403,404):raise
+   data=get(self.session,url.replace('/'+v['assetHash']+'/os/','/os/'))[0]
+  return self.unpack(data)['bundles']
  def download(self,key,entry,target):
   safe_path(key)
   url=self.base+key if self.region in ('jp','en') else self.base+entry['downloadPath']+'/'+key
@@ -135,10 +141,17 @@ def update_region(region,args,work,publisher,budget):
   session=requests.Session()
   if os.environ.get('GH_TOKEN'):session.headers['Authorization']='Bearer '+os.environ['GH_TOKEN']
   info=json.loads(get(session,f'https://api.github.com/repos/Sekai-World/{REGIONS[region]}/commits/main',limit=4*1024*1024)[0]);commit=info['sha']
+  if state.get('sourceCommit')==commit and state.get('exporterRevision')==REV and state.get('pending')==0:
+   return {'attempted':0,'unchanged':True,'readyRoles':len(public['roles'])}
+  state['sourceCommit']=commit;state['exporterRevision']=REV
   # Never send GitHub authorization to the game CDN or raw host.
   raw=requests.Session();base=f'https://raw.githubusercontent.com/Sekai-World/{REGIONS[region]}/{commit}/'
   for table in TABLES+['versions']:
    data,_=get(raw,base+table+'.json');(master/(table+'.json')).write_bytes(data)
+  for table in ('costume3dGroups','costume3dColors'):
+   try:(master/(table+'.json')).write_bytes(get(raw,base+table+'.json')[0])
+   except requests.HTTPError as error:
+    if error.response.status_code!=404:raise
   version=read(master/'versions.json',{});write(master/'current_version.json',version);source=Source(region,version);index=source.index()
   # Empty markers let Haruki resolve paths without downloading unselected bundles.
   for key in index:
@@ -176,14 +189,15 @@ def update_region(region,args,work,publisher,budget):
  for role in catalog['roles']:
   for field in ('bodyCostume3dId','headCostume3dId','hairCostume3dId'):defaults.add((role['characterId'],role['unit'],role[field]))
  ordered=sorted(entries,key=lambda e:((e['characterId'],e['unit'],e['costume3dId']) not in defaults,e['characterId'],e['costume3dId']))
- attempted=0
+ attempted=0;pending=0
  for e in ordered:
   k=key(e);current[k]=e
   if e['status']=='empty':state['done'][k]={'entry':e,'fingerprint':'empty'};continue
   if not inputs(e) or (e.get('colorAssetbundleName') and not e.get('colorVariationBundlePath')):continue
   fp=fingerprint(e)
   if state['done'].get(k,{}).get('fingerprint')==fp or state['failed'].get(k,{}).get('fingerprint')==fp:continue
-  if attempted>=budget:continue
+  if attempted>=budget:
+   pending+=1;continue
   attempted+=1
   try:
    deps=prepare(inputs(e));export('--emit-part-packages','--part-costume3d-id',str(e['costume3dId']),'--part-type',e['partType'],'--part-unit',e['unit'])
@@ -191,6 +205,8 @@ def update_region(region,args,work,publisher,budget):
    package=out/e['packagePath']/'part-runtime.msgpack.br'
    if not package.exists():raise FileNotFoundError('Exporter did not produce selected part')
    publish_tree();state['done'][k]={'entry':e,'fingerprint':fp};state['failed'].pop(k,None)
+  except (requests.RequestException,subprocess.CalledProcessError):
+   raise
   except Exception as ex:
    state['failed'][k]={'fingerprint':fp,'error':str(ex)[:300]}
   finally:
@@ -222,6 +238,7 @@ def update_region(region,args,work,publisher,budget):
  for p in (out/'parts/compat').rglob('*.br'):archive_file(p)
  public.update(roles=ready,masterVersion=version.get('dataVersion',''),exporterRevision=REV)
  public['revision']=sha(json.dumps([public['roles'],public['files']],sort_keys=True).encode())
+ state['pending']=pending
  write(public_path,public);write(state_path,state)
  return {'attempted':attempted,'readyRoles':len(ready),'publishedParts':len(state['done']),'failedParts':len(state['failed'])}
 
