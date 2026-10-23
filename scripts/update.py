@@ -116,6 +116,10 @@ class Publisher:
     run(['gh','release','upload',tag,dest,'--repo',REPO]);self.releases[tag].add(name)
   return {'sha256':digest,'bytes':len(data),'archiveBytes':dest.stat().st_size,'url':f'https://github.com/{REPO}/releases/download/{tag}/{name}'}
 
+def package_fingerprint(entry, dependency_hashes):
+ # Haruki itself groups exports by PackagePath; role labels do not change mesh output.
+ return sha(json.dumps([REV,entry['packagePath'],dependency_hashes],sort_keys=True).encode())
+
 def main():
  parser=argparse.ArgumentParser();parser.add_argument('--regions',nargs='+',choices=REGIONS,default=list(REGIONS));parser.add_argument('--limit',type=int,default=32);parser.add_argument('--publish',action='store_true');parser.add_argument('--local-input',type=pathlib.Path);args=parser.parse_args()
  if not 1<=args.limit<=100:raise ValueError('limit must be 1..100')
@@ -189,13 +193,21 @@ def update_region(region,args,work,publisher,budget):
  for role in catalog['roles']:
   for field in ('bodyCostume3dId','headCostume3dId','hairCostume3dId'):defaults.add((role['characterId'],role['unit'],role[field]))
  ordered=sorted(entries,key=lambda e:((e['characterId'],e['unit'],e['costume3dId']) not in defaults,e['characterId'],e['costume3dId']))
- attempted=0;pending=0
+ attempted=0;pending=0;reused=0;completed=set()
+ current_entries={key(e):e for e in entries}
+ for k,record in state['done'].items():
+  e=current_entries.get(k)
+  if e and e['status']!='empty' and inputs(e) and record['fingerprint']==fingerprint(e):
+   completed.add(package_fingerprint(e,{d:index[d]['hash'] for d in closure(index,inputs(e))}))
  for e in ordered:
   k=key(e);current[k]=e
   if e['status']=='empty':state['done'][k]={'entry':e,'fingerprint':'empty'};continue
   if not inputs(e) or (e.get('colorAssetbundleName') and not e.get('colorVariationBundlePath')):continue
   fp=fingerprint(e)
   if state['done'].get(k,{}).get('fingerprint')==fp or state['failed'].get(k,{}).get('fingerprint')==fp:continue
+  package_fp=package_fingerprint(e,{d:index[d]['hash'] for d in closure(index,inputs(e))})
+  if package_fp in completed:
+   state['done'][k]={'entry':e,'fingerprint':fp};state['failed'].pop(k,None);reused+=1;continue
   if attempted>=budget:
    pending+=1;continue
   attempted+=1
@@ -204,7 +216,7 @@ def update_region(region,args,work,publisher,budget):
    # Exporter writes validated part/core packages, textures are shared content-addressed files.
    package=out/e['packagePath']/'part-runtime.msgpack.br'
    if not package.exists():raise FileNotFoundError('Exporter did not produce selected part')
-   publish_tree();state['done'][k]={'entry':e,'fingerprint':fp};state['failed'].pop(k,None)
+   publish_tree();state['done'][k]={'entry':e,'fingerprint':fp};state['failed'].pop(k,None);completed.add(package_fp)
   except (requests.RequestException,subprocess.CalledProcessError):
    raise
   except Exception as ex:
@@ -240,6 +252,6 @@ def update_region(region,args,work,publisher,budget):
  public['revision']=sha(json.dumps([public['roles'],public['files']],sort_keys=True).encode())
  state['pending']=pending
  write(public_path,public);write(state_path,state)
- return {'attempted':attempted,'readyRoles':len(ready),'publishedParts':len(state['done']),'failedParts':len(state['failed'])}
+ return {'attempted':attempted,'readyRoles':len(ready),'reusedParts':reused,'pendingParts':pending,'publishedParts':len(state['done']),'failedParts':len(state['failed'])}
 
 if __name__=='__main__':main()

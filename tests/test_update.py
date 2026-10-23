@@ -4,6 +4,12 @@ class UpdateTests(unittest.TestCase):
  def test_dependency_closure_handles_shared_and_cyclic_inputs(self):
   index={'a':{'dependencies':['b','c']},'b':{'dependencies':['c']},'c':{'dependencies':['a']}}
   self.assertEqual(u.closure(index,['a']),['a','b','c'])
+ def test_shared_packages_ignore_role_labels_but_track_source_changes(self):
+  first={'packagePath':'parts/_sources/body/abc/','characterId':1,'name':'制服'}
+  second={**first,'characterId':2,'name':'Uniform'}
+  self.assertEqual(u.package_fingerprint(first,{'bundle':'v1'}),u.package_fingerprint(second,{'bundle':'v1'}))
+  self.assertNotEqual(u.package_fingerprint(first,{'bundle':'v1'}),u.package_fingerprint(second,{'bundle':'v2'}))
+  self.assertNotEqual(u.package_fingerprint(first,{'bundle':'v1'}),u.package_fingerprint({**first,'packagePath':'parts/_sources/body/variant/'},{'bundle':'v1'}))
  def test_rejects_unsafe_paths(self):
   for path in ['/a','../a','a/../b','a//b','a\\b']:
    with self.assertRaises(ValueError):u.safe_path(path)
