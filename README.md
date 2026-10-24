@@ -10,7 +10,7 @@ Objects are sharded into Releases by the first three SHA-256 digits (`objects-ab
 
 ## Updates
 
-The hourly workflow processes a bounded batch and resumes from committed `state/`. Source fingerprints include master records, transitive Bundle hashes and the pinned exporter revision. Changed sources are regenerated; known failing inputs are quarantined until their fingerprint changes. Inspect `state/*/failed` and workflow diagnostics before retrying those inputs. Exports sharing Haruki’s package path and identical dependency hashes reuse a completed package, while each regional/character catalog retains its own labels. Initial population takes multiple runs; only roles with successfully exported default parts and role runtimes are exposed.
+The hourly workflow processes up to 200 unique part conversions within a shared 40-minute conversion budget (plus setup/catalog publication) and resumes from committed `state/`. Source fingerprints include master records, transitive Bundle hashes and the pinned exporter revision. Changed sources are regenerated; known failing inputs are quarantined until their fingerprint changes. Inspect `state/*/failed` and workflow diagnostics before retrying those inputs. Exports sharing Haruki’s package path and identical dependency hashes reuse a completed package, while each regional/character catalog retains its own labels. Initial population takes multiple runs; only roles with successfully exported default parts and role runtimes are exposed.
 
 Run on macOS with .NET 9, Node 24 and Python 3.12:
 
@@ -42,4 +42,17 @@ slots 15 and 16 are null, while only slots 0 and 1 have nonzero weights. The
 upstream prefab exporter removed nulls and incorrectly reported 23 slots.
 The corrected sample exports and is tested with the embedded WebKit viewer.
 Exporter revision fingerprints include the patch version, so failed inputs are
-retried first after this update. Nene's default parts were already published.
+eligible for retry after this update. Nene's default parts were already published.
+
+## Initial wardrobe population
+
+Actions dispatch accepts `region` (`all` or a single region), `limit` (1–1000),
+and `minutes` (up to 60). A single-region dispatch puts its whole budget into
+that catalog; hourly runs continue all five regions. The queue offers a first
+non-default part to each ready role, then completes defaults for unavailable
+roles, then fills further wardrobe choices round-robin. Default costume IDs
+from other characters are not counted as non-default outfits. Repeated entries
+sharing a package consume only one conversion. Diagnostics report both pending
+catalog entries and pending unique packages; neither is a count of downloadable
+files. Initial population remains gradual, and the client shows only published
+parts. Local execution remains limited to small tests.

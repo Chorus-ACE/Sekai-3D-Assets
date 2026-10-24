@@ -10,6 +10,13 @@ class UpdateTests(unittest.TestCase):
   self.assertEqual(u.package_fingerprint(first,{'bundle':'v1'}),u.package_fingerprint(second,{'bundle':'v1'}))
   self.assertNotEqual(u.package_fingerprint(first,{'bundle':'v1'}),u.package_fingerprint(second,{'bundle':'v2'}))
   self.assertNotEqual(u.package_fingerprint(first,{'bundle':'v1'}),u.package_fingerprint({**first,'packagePath':'parts/_sources/body/variant/'},{'bundle':'v1'}))
+ def test_wardrobe_queue_balances_ready_roles_and_new_role_defaults(self):
+  def e(character,costume,kind='body'):return {'characterId':character,'unit':'u','costume3dId':costume,'partType':kind}
+  rows=[e(1,2),e(1,4),e(1,7002),e(1,8002),e(2,4),e(2,7004),e(3,6),e(3,203,'hair')]
+  ordered=u.wardrobe_order(rows,{(1,'u',2),(2,'u',4),(3,'u',6),(3,'u',203)},{(1,'u'),(2,'u')})
+  self.assertEqual([(x['characterId'],x['costume3dId']) for x in ordered[:4]],[(1,7002),(2,7004),(3,6),(3,203)])
+  self.assertLess(ordered.index(rows[3]),ordered.index(rows[0]))
+  self.assertEqual(len(ordered),len(rows))
  def test_rejects_unsafe_paths(self):
   for path in ['/a','../a','a/../b','a//b','a\\b']:
    with self.assertRaises(ValueError):u.safe_path(path)

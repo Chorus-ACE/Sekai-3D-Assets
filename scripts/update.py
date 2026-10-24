@@ -120,9 +120,25 @@ def package_fingerprint(entry, dependency_hashes):
  # Haruki itself groups exports by PackagePath; role labels do not change mesh output.
  return sha(json.dumps([REV,entry['packagePath'],dependency_hashes],sort_keys=True).encode())
 
+def wardrobe_order(entries, defaults, ready_roles):
+ # Offer one new body per ready role before filling any one character's wardrobe.
+ groups={}
+ default_ids={x[2] for x in defaults}
+ for e in entries:
+  role=(e['characterId'],e['unit'])
+  default=(e['characterId'],e['unit'],e['costume3dId']) in defaults
+  tier=0 if role in ready_roles and e['costume3dId'] not in default_ids else (1 if role not in ready_roles and default else 3)
+  groups.setdefault((tier,role),[]).append(e)
+ ranked=[]
+ for (tier,role),group in groups.items():
+  group.sort(key=lambda e:({'body':0,'hair':1,'head':2,'head_optional':3}.get(e['partType'],4),e['costume3dId']))
+  for rank,e in enumerate(group):ranked.append((2 if tier==0 and rank>0 else tier,rank,role,e))
+ return [x[3] for x in sorted(ranked,key=lambda x:x[:3])]
+
 def main():
- parser=argparse.ArgumentParser();parser.add_argument('--regions',nargs='+',choices=REGIONS,default=list(REGIONS));parser.add_argument('--limit',type=int,default=32);parser.add_argument('--publish',action='store_true');parser.add_argument('--local-input',type=pathlib.Path);args=parser.parse_args()
- if not 1<=args.limit<=100:raise ValueError('limit must be 1..100')
+ parser=argparse.ArgumentParser();parser.add_argument('--regions',nargs='+',choices=REGIONS,default=list(REGIONS));parser.add_argument('--limit',type=int,default=32);parser.add_argument('--minutes',type=float,default=40);parser.add_argument('--publish',action='store_true');parser.add_argument('--local-input',type=pathlib.Path);args=parser.parse_args()
+ if not 1<=args.limit<=1000:raise ValueError('limit must be 1..1000')
+ if not 0<args.minutes<=60:raise ValueError('minutes must be greater than 0 and at most 60')
  work=ROOT/'.work';work.mkdir(exist_ok=True);os.environ['WORK_ROOT']=str(work);publisher=Publisher(work,args.publish)
  summary={};remaining=args.limit
  for region in args.regions:
@@ -166,6 +182,7 @@ def update_region(region,args,work,publisher,budget):
   with log.open('w') as f:
    result=subprocess.run(list(map(str,['dotnet',HARUKI/'exporter/bin/Release/net9.0/Haruki-3D-Exporter.dll',*flags,'--master',master,'--asset-root',assets,'--out',out,'--png-optimize','off'])),stdout=f,stderr=subprocess.STDOUT)
   if result.returncode:raise RuntimeError(log.read_text()[-1500:])
+ staged=set()
  def prepare(keys):
   deps=closure(index,keys)
   if sum(index[k]['fileSize'] for k in deps)>256*1024*1024:raise ValueError('Per-task bundle budget exceeded')
@@ -173,7 +190,7 @@ def update_region(region,args,work,publisher,budget):
    p=assets/(k+'.bundle')
    if not p.exists() or p.stat().st_size==0:
     if source is None:raise FileNotFoundError(k)
-    source.download(k,index[k],p)
+    source.download(k,index[k],p);staged.add(p)
   return deps
  def archive_file(p):
   rel=p.relative_to(out).as_posix();data=p.read_bytes()
@@ -192,7 +209,9 @@ def update_region(region,args,work,publisher,budget):
  defaults=set()
  for role in catalog['roles']:
   for field in ('bodyCostume3dId','headCostume3dId','hairCostume3dId'):defaults.add((role['characterId'],role['unit'],role[field]))
- ordered=sorted(entries,key=lambda e:(key(e) not in state['failed'],(e['characterId'],e['unit'],e['costume3dId']) not in defaults,e['characterId'],e['costume3dId']))
+ ordered=wardrobe_order([e for e in entries if e['status']=='empty' or (inputs(e) and not (e.get('colorAssetbundleName') and not e.get('colorVariationBundlePath')))],defaults,{(r['characterId'],r['unit']) for r in public['roles']})
+ deadline=time.monotonic()+args.minutes*60/len(args.regions)
+ pending_packages=set()
  attempted=0;pending=0;reused=0;completed=set()
  current_entries={key(e):e for e in entries}
  for k,record in state['done'].items():
@@ -208,8 +227,8 @@ def update_region(region,args,work,publisher,budget):
   package_fp=package_fingerprint(e,{d:index[d]['hash'] for d in closure(index,inputs(e))})
   if package_fp in completed:
    state['done'][k]={'entry':e,'fingerprint':fp};state['failed'].pop(k,None);reused+=1;continue
-  if attempted>=budget:
-   pending+=1;continue
+  if attempted>=budget or time.monotonic()>=deadline:
+   pending+=1;pending_packages.add(package_fp);continue
   attempted+=1
   try:
    deps=prepare(inputs(e));export('--emit-part-packages','--part-costume3d-id',str(e['costume3dId']),'--part-type',e['partType'],'--part-unit',e['unit'])
@@ -226,8 +245,8 @@ def update_region(region,args,work,publisher,budget):
    for d in ('_texture_store','parts/_sources','parts/_cores'):
     shutil.rmtree(out/d,ignore_errors=True)
    if source:
-    for p in assets.rglob('*.bundle'):
-     if p.stat().st_size:p.write_bytes(b'')
+    for p in staged:p.write_bytes(b'')
+    staged.clear()
  ready=[]
  character_names={x['id']: x.get('firstName','')+x.get('givenName','') for x in read(master/'gameCharacters.json',[])}
  for role in catalog['roles']:
@@ -239,7 +258,7 @@ def update_region(region,args,work,publisher,budget):
     keys=[k for e in selected if (e['characterId'],e['unit'],e['costume3dId']) in defaults for k in inputs(e)]
     motion=f"character/motion/costume_setting/{role['characterId']:02d}_00"
     if motion in index:keys.append(motion)
-    prepare(keys);export('--emit-role-runtimes','--role-character3d-id',str(role['roleId']));publish_tree();state['roles'][rolekey]=role_fp
+    prepare(keys);export('--emit-role-runtimes','--role-character3d-id',str(role['roleId']));publish_tree();state['roles'][rolekey]=role_fp;shutil.rmtree(out/'roles',ignore_errors=True)
    except Exception:continue
   ready.append({**role,'id':rolekey,'name':character_names.get(role['characterId'],str(role['characterId'])),'parts':[{'id':key(e),'costumeID':e['costume3dId'],'type':e['partType'],'name':e['name'],'colorName':e.get('colorName','')} for e in selected]})
   scoped=out/f"parts/by-role/{role['characterId']}/{role['unit']}";scoped.mkdir(parents=True,exist_ok=True)
@@ -252,6 +271,6 @@ def update_region(region,args,work,publisher,budget):
  public['revision']=sha(json.dumps([public['roles'],public['files']],sort_keys=True).encode())
  state['pending']=pending
  write(public_path,public);write(state_path,state)
- return {'attempted':attempted,'readyRoles':len(ready),'reusedParts':reused,'pendingParts':pending,'publishedParts':len(state['done']),'failedParts':len(state['failed'])}
+ return {'attempted':attempted,'readyRoles':len(ready),'reusedParts':reused,'pendingParts':pending,'pendingPackages':len(pending_packages),'publishedParts':len(state['done']),'failedParts':len(state['failed'])}
 
 if __name__=='__main__':main()

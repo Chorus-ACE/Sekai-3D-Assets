@@ -5,9 +5,17 @@ on:
   workflow_dispatch:
     inputs:
       limit:
-        description: Maximum part conversions per run (1–100)
-        default: '32'
+        description: Maximum unique part conversions per run (1–1000)
+        default: '200'
         required: true
+      region:
+        description: Region to populate (all keeps all five regional catalogs current)
+        type: choice
+        options: [all, jp, en, tw, kr, cn]
+        default: all
+      minutes:
+        description: Total conversion time budget, excluding setup and catalog publication (1–60)
+        default: '40'
 permissions:
   contents: write
 concurrency:
@@ -44,8 +52,15 @@ jobs:
         id: export
         continue-on-error: true
         env:
-          PART_LIMIT: ${{ inputs.limit || '32' }}
-        run: python scripts/update.py --limit "$PART_LIMIT" --publish
+          PART_LIMIT: ${{ inputs.limit || '200' }}
+          REGION: ${{ inputs.region || 'all' }}
+          MINUTES: ${{ inputs.minutes || '40' }}
+        run: |
+          if [[ "$REGION" == all ]]; then
+            python scripts/update.py --limit "$PART_LIMIT" --minutes "$MINUTES" --publish
+          else
+            python scripts/update.py --regions "$REGION" --limit "$PART_LIMIT" --minutes "$MINUTES" --publish
+          fi
       - name: Commit manifests after object upload
         if: always() && steps.export.outcome != 'skipped'
         run: |
