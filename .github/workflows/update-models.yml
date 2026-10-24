@@ -37,7 +37,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: .vendor
-          key: haruki-macos-v1-1e0abc65-70e6ec3e
+          key: haruki-macos-null-slots-v1-1e0abc65-70e6ec3e
       - name: Prepare pinned exporter
         run: bash scripts/setup.sh
       - name: Export bounded increment

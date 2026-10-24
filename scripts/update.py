@@ -6,7 +6,7 @@ import requests, msgpack
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 HARUKI=pathlib.Path(os.environ.get('HARUKI_ROOT',ROOT/'.vendor/Haruki-3D')).resolve()
 SSSEKAI=pathlib.Path(os.environ.get('SSSEKAI_ROOT',ROOT/'.vendor/sssekai')).resolve()
-REV='1e0abc65885a5adef8faa64925260d7f836c20e3'
+REV='1e0abc65885a5adef8faa64925260d7f836c20e3-null-skin-slots-v1'
 REPO='Chorus-ACE/Sekai-3D-Assets'
 REGIONS={'jp':'sekai-master-db-diff','en':'sekai-master-db-en-diff','tw':'sekai-master-db-tc-diff','kr':'sekai-master-db-kr-diff','cn':'sekai-master-db-cn-diff'}
 TABLES=['character3ds','gameCharacters','gameCharacterUnits','costume3ds','costume3dModels','cards','cardCostume3ds','costume3dModelNotAvailablePatterns','costume3dModelDefaultHairs']
@@ -192,7 +192,7 @@ def update_region(region,args,work,publisher,budget):
  defaults=set()
  for role in catalog['roles']:
   for field in ('bodyCostume3dId','headCostume3dId','hairCostume3dId'):defaults.add((role['characterId'],role['unit'],role[field]))
- ordered=sorted(entries,key=lambda e:((e['characterId'],e['unit'],e['costume3dId']) not in defaults,e['characterId'],e['costume3dId']))
+ ordered=sorted(entries,key=lambda e:(key(e) not in state['failed'],(e['characterId'],e['unit'],e['costume3dId']) not in defaults,e['characterId'],e['costume3dId']))
  attempted=0;pending=0;reused=0;completed=set()
  current_entries={key(e):e for e in entries}
  for k,record in state['done'].items():

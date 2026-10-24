@@ -27,3 +27,19 @@ Publishing requires an authenticated `gh` and the explicit `--publish` flag. Kee
 `viewer/` builds the native App's embedded Haruki viewer. `HARUKI_ROOT` points to the pinned checkout; `VIEWER_OUT` points to `GreatSekai/GreatSekai/Resources/Model3DWeb.bundle`. Build with the pinned engine's Vite binary. Native SekaiKit handles archive decoding and HTTP caching; WebKit requests runtime paths through the App's `sekai3d` URL scheme.
 
 Code: MIT (see LICENSE). Third-party tool licenses remain applicable. Game assets are not covered by this repository's code license. This project is unofficial and is not endorsed by the game publishers or Haruki.
+
+## Exporter correction: unused null skin slots
+
+The pinned exporter is patched by `patches/0001-preserve-null-skin-slots.patch`.
+Prefab renderer bone arrays retain null slots. Runtime meshes remove only unused
+null slots, retain each surviving inverse bind matrix, and remap all vertex skin
+indices. A weighted null or invalid index still fails; no guessed bindings are
+published. Synthetic regressions run in setup before any model publication.
+
+The verified failing sample is **Emu (character 14), default hair 214**, not Nene
+(character 15). Its Face mesh has 25 bindposes and 25 original renderer slots;
+slots 15 and 16 are null, while only slots 0 and 1 have nonzero weights. The
+upstream prefab exporter removed nulls and incorrectly reported 23 slots.
+The corrected sample exports and is tested with the embedded WebKit viewer.
+Exporter revision fingerprints include the patch version, so failed inputs are
+retried first after this update. Nene's default parts were already published.

@@ -14,6 +14,14 @@ fetch() {
 fetch Team-Haruki/Haruki-3D 1e0abc65885a5adef8faa64925260d7f836c20e3 .vendor/Haruki-3D
 fetch MetaSekaiLab/sssekai 523a3659ea6641a6aa9c5f940341ad458391344c .vendor/sssekai
 fetch seiunx-dev/AssetStudio 70e6ec3e00665ff3c36a8af08f8e2824c2eba873 .vendor/AssetStudio
+# Patch the pinned checkout; cached trees may already contain this exact patch.
+for patch_file in patches/*.patch; do
+ if git -C .vendor/Haruki-3D apply --check "$PWD/$patch_file" 2>/dev/null; then
+  git -C .vendor/Haruki-3D apply "$PWD/$patch_file"
+ else
+  git -C .vendor/Haruki-3D apply --reverse --check "$PWD/$patch_file"
+ fi
+done
 studio="$PWD/.vendor/AssetStudio"
 rid=osx-arm64
 [[ "$(uname -m)" == x86_64 ]] && rid=osx-x64
@@ -21,4 +29,5 @@ dotnet build "$studio/AssetStudioCLI/AssetStudioCLI.csproj" -c Release -f net8.0
 cp -R "$studio/AssetStudioCLI/bin/Release/net8.0/$rid/." "$studio/AssetStudioCLI/bin/Release/net8.0/"
 dotnet build .vendor/Haruki-3D/exporter/Haruki-3D-Exporter.csproj -c Release -p:AssetStudioRoot="$studio"
 cp "$studio/AssetStudioCore/Libraries/$rid/"*.dylib .vendor/Haruki-3D/exporter/bin/Release/net9.0/
+dotnet run --project .vendor/Haruki-3D/exporter/Tests/AssetStudioMetadata/AssetStudioMetadata.csproj -c Release -p:AssetStudioRoot="$studio" -- --synthetic-only
 npm --prefix .vendor/Haruki-3D/engine ci --ignore-scripts --no-audit --no-fund

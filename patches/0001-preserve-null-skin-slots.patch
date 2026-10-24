@@ -1,0 +1,101 @@
+--- a/exporter/Services/SpringBoneExporter.cs
++++ b/exporter/Services/SpringBoneExporter.cs
+@@ -323,7 +323,6 @@
+         var skinnedMeshBones = renderer is SkinnedMeshRenderer skinnedMeshRenderer
+             ? skinnedMeshRenderer.m_Bones
+                 .Select(bone => bone.m_PathID)
+-                .Where(pathId => pathId != 0)
+                 .ToList()
+             : new List<long>();
+         var rootBonePathId = rendererRawByPathId.TryGetValue(renderer.m_PathID, out var rendererRaw)
+--- a/exporter/Services/UnityRuntimeNativeMeshExporter.cs
++++ b/exporter/Services/UnityRuntimeNativeMeshExporter.cs
+@@ -207,6 +207,8 @@
+             var missingBone = false;
+             foreach (var pathId in renderer.SkinnedMeshBones)
+             {
++                // Null slots retain their source indices until the runtime palette is built.
++                if (pathId == 0) { rendererBonePaths.Add(string.Empty); continue; }
+                 if (!transformPathByPathId.TryGetValue(pathId, out var bonePath))
+                 {
+                     missingBone = true;
+@@ -221,8 +223,9 @@
+                     $"{partKind} mesh '{mesh.Path}' renderer {renderer.PathId} has unresolved skinned bone PathIDs.");
+             }
+ 
++            var runtimeBones = CompactUnusedNullSkinSlots(mesh, rendererBonePaths, renderer.SkinnedMeshBones);
+             var skinBones = ResolveSkinBoneReferences(
+-                mesh, rendererBonePaths, renderer.SkinnedMeshBones, graph.Transforms);
++                mesh, runtimeBones.Paths, runtimeBones.PathIds, graph.Transforms);
+             if (!TryResolveSkinBinding(
+                     mesh,
+                     skinBones.Paths,
+@@ -448,6 +451,37 @@
+             pathIds.Add(matches[0].PathId);
+         }
+         return new ExactBoneReferences(paths, pathIds);
++    }
++
++    private static ExactBoneReferences CompactUnusedNullSkinSlots(
++        ImportedMesh mesh, IReadOnlyList<string> paths, IReadOnlyList<long> pathIds)
++    {
++        if (!pathIds.Contains(0)) return new ExactBoneReferences(paths, pathIds);
++        if (paths.Count != pathIds.Count || mesh.BoneList?.Count != pathIds.Count)
++            throw new InvalidDataException($"Mesh '{mesh.Path}' has null slots without a matching bindpose palette.");
++        var retained = Enumerable.Range(0, pathIds.Count).Where(i => pathIds[i] != 0).ToArray();
++        if (retained.Length == 0)
++            throw new InvalidDataException($"Mesh '{mesh.Path}' has no resolved skin bones.");
++        var remap = Enumerable.Repeat(-1, pathIds.Count).ToArray();
++        for (var i = 0; i < retained.Length; i++) remap[retained[i]] = i;
++        // Validate the entire mesh before mutation. Never guess a weighted null bone.
++        foreach (var vertex in mesh.VertexList)
++        {
++            if (vertex.BoneIndices is not { Length: 4 } || vertex.Weights is not { Length: 4 })
++                throw new InvalidDataException("Null-slot skin data must contain four influences.");
++            for (var i = 0; i < 4; i++)
++            {
++                var weight = vertex.Weights[i]; var index = vertex.BoneIndices[i];
++                if (!float.IsFinite(weight) || weight < 0 ||
++                    (weight > 0 && (index < 0 || index >= remap.Length || remap[index] < 0)))
++                    throw new InvalidDataException($"Mesh '{mesh.Path}' has an invalid or unresolved weighted skin slot {index}.");
++            }
++        }
++        foreach (var vertex in mesh.VertexList)
++            for (var i = 0; i < 4; i++)
++                vertex.BoneIndices[i] = vertex.Weights[i] == 0 ? 0 : remap[vertex.BoneIndices[i]];
++        mesh.BoneList = retained.Select(i => mesh.BoneList![i]).ToList();
++        return new ExactBoneReferences(retained.Select(i => paths[i]).ToArray(), retained.Select(i => pathIds[i]).ToArray());
+     }
+ 
+     private static ExactBoneReferences ResolveSkinBoneReferences(
+--- a/exporter/Tests/AssetStudioMetadata/Program.cs
++++ b/exporter/Tests/AssetStudioMetadata/Program.cs
+@@ -72,6 +72,28 @@
+ catch (System.Reflection.TargetInvocationException ex) when (ex.InnerException is InvalidDataException)
+ { rejectedWeightedReorder = true; }
+ Require(rejectedWeightedReorder, "A weighted slot was rebound to a different renderer transform");
++// A null slot in the middle must not shift the meaning of later weighted bones.
++var compact = typeof(PjskBundle2Parts.Services.UnityRuntimeNativeMeshExporter).GetMethod(
++    "CompactUnusedNullSkinSlots", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
++ImportedMesh NullSlotMesh(int weightedIndex) => new() {
++    BoneList = new() { mesh.BoneList[0], mesh.BoneList[1], mesh.BoneList[2] },
++    VertexList = new() { new() { BoneIndices = new[] { weightedIndex, 1, 999, -1 }, Weights = new[] { 1f, 0f, 0f, 0f } } }
++};
++var nullMesh = NullSlotMesh(2);
++object?[] nullArgs = { nullMesh, new[] { "Root/Thigh", "", "Root/Knee" }, new long[] { 17, 0, 29 } };
++var nullPalette = compact.Invoke(null, nullArgs)!;
++Require(nullMesh.BoneList.Count == 2 && nullMesh.BoneList[1].Matrix == mesh.BoneList[2].Matrix,
++    "Compaction lost the inverse bind matrix of a later weighted bone");
++Require(nullMesh.VertexList[0].BoneIndices.SequenceEqual(new[] { 1, 0, 0, 0 }), "Skin indices were not remapped safely");
++var compactIds = (IReadOnlyList<long>)nullPalette.GetType().GetProperty("PathIds")!.GetValue(nullPalette)!;
++Require(compactIds.SequenceEqual(new long[] { 17, 29 }), "Compaction reordered valid bones");
++foreach (var badIndex in new[] { 1, 3, -1 }) {
++    var badMesh = NullSlotMesh(badIndex); nullArgs[0] = badMesh;
++    var rejected = false;
++    try { compact.Invoke(null, nullArgs); }
++    catch (System.Reflection.TargetInvocationException ex) when (ex.InnerException is InvalidDataException) { rejected = true; }
++    Require(rejected && badMesh.BoneList.Count == 3, "Invalid weighted bone accepted or input partially mutated");
++}
+ var buildMorph = typeof(PjskBundle2Parts.Services.UnityRuntimeNativeMeshExporter).GetMethod(
+     "BuildMorphTarget", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+ mesh.Path = "Root/Face";
