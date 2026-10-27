@@ -1,6 +1,14 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {nativeSkinPalette} from '../native-character.mjs';
+import {nativeSkinPalette,nativePrefabNodes} from '../native-character.mjs';
+
+test('prefab membership follows instance identity rather than duplicated paths',()=>{
+  const nodes=[{id:1,path:'face'},{id:2,path:'face/Hip',parentID:1},{id:3,path:'face'},
+    {id:4,path:'face/Hip',parentID:3},{id:5,path:'sourceFBX'}];
+  const active=nativePrefabNodes({nodes,meshes:[{transformID:2}]},'face');
+  assert.deepEqual(nodes.filter(active).map(n=>n.id),[1,2]);
+  assert.throws(()=>nativePrefabNodes({nodes,meshes:[{transformID:2},{transformID:4}]},'face'),/found 2/);
+});
 
 const nodes=new Map([[1,{path:'face'}],[2,{path:'face/Hip'}],[3,{path:'face/Hip/Neck'}],[4,{path:'sourceFBX/Hip'}]]);
 const active=node=>!!node&&(node.path==='face'||node.path.startsWith('face/'));

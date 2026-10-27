@@ -32,6 +32,22 @@ export function nativeSkinPalette(mesh,nodes,active) {
   });
 }
 
+export function nativePrefabNodes(scene, rootName) {
+  const nodes=new Map(scene.nodes.map(n=>[n.id,n]));
+  const rootOf=node=>{
+    const visited=new Set();
+    while(node&&node.parentID!=null){
+      if(visited.has(node.id))throw Error('Native prefab hierarchy contains a cycle');
+      visited.add(node.id);node=nodes.get(node.parentID);
+    }
+    return node;
+  };
+  const roots=new Set(scene.meshes.map(m=>rootOf(nodes.get(m.transformID))).filter(n=>n?.path===rootName).map(n=>n.id));
+  if(roots.size!==1)throw Error(`Native part requires one ${rootName} prefab instance; found ${roots.size}`);
+  const rootID=[...roots][0];
+  return node=>!!node&&rootOf(node)?.id===rootID;
+}
+
 export function nativePart(entry, scene, sceneURL, height) {
   if (!scene.nodes?.length || !scene.meshes?.length) throw Error('The native part has no prefab geometry');
   const nodes=new Map(scene.nodes.map(n=>[n.id,n]));
@@ -39,7 +55,7 @@ export function nativePart(entry, scene, sceneURL, height) {
   const nodeRef=id=>{const n=nodes.get(id);return n?{pathId:id,name:n.name,transformPath:n.path}:null};
   const partKind=entry.partType==='body'?'body':'head';
   const activeRoot=entry.partType==='body'?'body':entry.partType==='head_optional'?'optional':'face';
-  const active=n=>n&&(n.path===activeRoot||n.path.startsWith(activeRoot+'/'));
+  const active=nativePrefabNodes(scene,activeRoot);
   const transforms=scene.nodes.filter(active).map(n=>({pathId:n.id,name:n.name,transformPath:n.path,poseRoot:n.path.split('/')[0],
     parentPathId:n.parentID??null,childPathIds:scene.nodes.filter(c=>c.parentID===n.id).map(c=>c.id),
     localPosition:vec(n.position),localRotation:quat(n.rotation),localScale:vec(n.scale)}));
@@ -64,7 +80,7 @@ export function nativePart(entry, scene, sceneURL, height) {
   for(const b of bones)colliderBindings.push({sourceKind:'direct',partKind,sourceSpringBonePathId:b.pathId,sourceColliderPathIds:b.directColliderPathIds,
     colliders:colliders.filter(c=>b.directColliderPathIds.includes(c.pathId)).map(c=>c.index)});
   const materials=scene.materials,materialSlots=[];
-  const meshes=scene.meshes.map((mesh,meshIndex)=>{
+  const meshes=scene.meshes.filter(mesh=>active(nodes.get(mesh.transformID))).map((mesh,meshIndex)=>{
     const transform=nodes.get(mesh.transformID);
     if(!transform)throw Error('Native renderer transform is missing');
     const submeshes=mesh.groups.map((group,slotIndex)=>{
@@ -93,7 +109,7 @@ export function nativePart(entry, scene, sceneURL, height) {
   const graph={version:1,partKind,transforms,gameObjects:[],renderers:meshes.map(m=>({pathId:m.rendererPathId,typeName:m.bonePathIds.length?"SkinnedMeshRenderer":"MeshRenderer",transformPathId:m.rendererTransformPathId,transformPath:m.rendererTransformPath})),
     monoBehaviours:behaviours.map(b=>({pathId:b.id,scriptName:b.script,transformPath:nodes.get(b.nodeID)?.path,enabled:enabled(b.data.m_Enabled)})),constraints:[],animators:[]};
   const adjustments={};
-  for(const b of scene.behaviours??[]){const dict=b.data?._faceIdAccessoryTransformDict;if(dict)for(let i=0;i<(dict.m_Keys??[]).length;i++){
+  for(const b of behaviours){const dict=b.data?._faceIdAccessoryTransformDict;if(dict)for(let i=0;i<(dict.m_Keys??[]).length;i++){
     const value=dict.m_Values[i];adjustments[dict.m_Keys[i]]={position:value?.position??value?._position,rotationEulerDegrees:value?.rotation??value?._rotation,scale:value?.scale??value?._scale};
   }}
   const packagePath='native/'+encodeURIComponent(entry.id)+'/';

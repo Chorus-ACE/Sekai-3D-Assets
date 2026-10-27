@@ -38,8 +38,16 @@ JP signature cookies are scoped in memory to that source and never published.
 TW/KR/CN preserve their own iOS download-path variants and CRC/build identities.
 Common downloaded Bundles reuse the same local content-addressed file. Raw and
 derived data share a 512 MiB model-cache budget. Derived PNGs belong to their part
-cache; identical dependencies are not downloaded again. There is no silent use of
-legacy preconverted model Releases.
+cache; identical dependencies are not downloaded again.
+
+The part's `primaryBundle` selects the prefab to instantiate,
+while all dependency objects remain available for mesh/material references. This
+selection participates in the derived-cache identity, so older cached scenes that
+included a dependency's default face rebuild from the existing raw cache. The
+viewer matches transforms, controllers and animation nodes by prefab instance,
+rather than merging identically named paths from different instances.
+
+There is no silent use of legacy preconverted model Releases.
 
 Per-part native limits: 32 Bundles, 64 MiB compressed input, 128 MiB expanded input,
 500,000 vertices, 16,777,216 decoded texture pixels and 4096px maximum texture edge.

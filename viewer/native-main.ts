@@ -3,7 +3,7 @@ import {Haruki3DEngine} from 'haruki-local-engine';
 import {previewLightDefaults} from 'haruki-3d-engine';
 import {composeRuntimeCombinedCharacterAsset} from 'haruki-local-composer';
 import {createHarukiBaseCharacterRuntime} from 'haruki-local-base';
-import {nativePart} from './native-character.mjs';
+import {nativePart,nativePrefabNodes} from './native-character.mjs';
 import {createNativeMotionPlayer} from './native-animation.mjs';
 import {attachViewerInteractions} from './interactions.mjs';
 import {viewerStrings} from './localization.mjs';
@@ -45,7 +45,10 @@ async function loadNative(recipe:any){
   await engine.importCombinedCharacter(combined,{disposeBeforeLoad:true,clearAnimationCache:true});
   const body=loaded.find(item=>item.part.entry.partType==='body');
   const clips=body?.scene.animationClips??[];
-  const sourceNodes=loaded.flatMap(item=>(item.scene.nodes??[]).map((node:any)=>({...node,morphNames:item.scene.meshes.filter((m:any)=>m.transformID===node.id).flatMap((m:any)=>(m.morphTargets??[]).map((t:any)=>t.name))}))),root=engine.getCharacterRoot();
+  const sourceNodes=loaded.flatMap(item=>{
+    const kind=item.part.entry.partType,active=nativePrefabNodes(item.scene,kind==='body'?'body':kind==='head_optional'?'optional':'face');
+    return item.scene.nodes.filter(active).map((node:any)=>({...node,morphNames:item.scene.meshes.filter((m:any)=>m.transformID===node.id).flatMap((m:any)=>(m.morphTargets??[]).map((t:any)=>t.name))}));
+  }),root=engine.getCharacterRoot();
   const byPath=new Map<string,THREE.Object3D[]>();for(const [path,node] of (engine as any).currentPrefabSourceGraph?.nodeByPath??[])byPath.set(path,[node]);root.traverse(node=>{const p=node.userData.pjskTransformPath;if(p){if(!byPath.has(p))byPath.set(p,[]);if(!byPath.get(p)!.includes(node))byPath.get(p)!.push(node);}});
   motion=createNativeMotionPlayer(THREE,root,clips,sourceNodes,byPath,resume);
   (window as any).nativeModelDiagnostics={parts:loaded.length,meshCount:loaded.reduce((n,p)=>n+p.scene.meshes.length,0),motionTracks:motion?.trackCount??0,source:'local-unity'};

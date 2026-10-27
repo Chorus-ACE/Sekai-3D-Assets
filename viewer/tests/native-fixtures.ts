@@ -60,6 +60,9 @@ if(process.env.SEKAI_NATIVE_HAIR_FIXTURES){
   const combined=composeRuntimeCombinedCharacterAsset({partSet:{registry:allRegistry,packages:allPackages,roles:[{characterId:1,unit:'light_sound',bodyCostume3dId:7002,hairCostume3dId:id,headCostume3dId:1,characterHeightMeters:1.61}],roleRuntimes:new Map(),compatibility:null,baseUrl:'native://test'},selection:{characterId:1,unit:'light_sound',bodyCostume3dId:7002,hairCostume3dId:id,headCostume3dId:1},activeRoleId:null,resolveUrl:p=>p});
   const graph=buildUnityPrefabSourceGraph(combined.runtimeExtension,null);assert(graph);
   const result=installUnityRuntimeNativeMeshes(graph,combined.runtimeExtension);assert(!result.error,result.error);assert(result.skinnedMeshCount>=2);
+  const physics=UnityPrefabSpringRuntime.fromPjskRuntimeExtension(combined.runtimeExtension,graph.root);assert(physics);
+  for(let frame=0;frame<120;frame++)physics.update(1/60);
+  assert.equal(physics.getSnapshot().missingNodeCount,0);
   const sourceNodes=[body,scene].flatMap(s=>s.nodes.map(n=>({...n,morphNames:s.meshes.filter(m=>m.transformID===n.id).flatMap(m=>(m.morphTargets??[]).map(t=>t.name))})));
   const player=createNativeMotionPlayer(THREE,graph.root,body.animationClips,sourceNodes,new Map([...graph.nodeByPath].map(([path,node])=>[path,[node]])));assert(player);
   player.update(.8);graph.root.updateMatrixWorld(true);
