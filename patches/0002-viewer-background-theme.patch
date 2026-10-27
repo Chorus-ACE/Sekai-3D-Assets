@@ -1,0 +1,118 @@
+--- a/engine/src/engine/captureBackground.ts
++++ b/engine/src/engine/captureBackground.ts
+@@ -1,7 +1,7 @@
+ import * as THREE from "three";
+ 
+-export function createCaptureBackgroundTexture(width: number, height: number) {
+-  const canvas = drawCaptureTriangleBackground(width, height);
++export function createCaptureBackgroundTexture(width: number, height: number, theme: "light" | "dark" = "light") {
++  const canvas = drawCaptureTriangleBackground(width, height, theme === "dark");
+   const texture = new THREE.CanvasTexture(canvas);
+   texture.colorSpace = THREE.SRGBColorSpace;
+   return texture;
+@@ -15,7 +15,7 @@
+   };
+ }
+ 
+-function drawCaptureTriangleBackground(width: number, height: number) {
++function drawCaptureTriangleBackground(width: number, height: number, dark: boolean) {
+   const canvas = document.createElement("canvas");
+   canvas.width = width;
+   canvas.height = height;
+@@ -25,18 +25,18 @@
+   }
+ 
+   const primary = context.createLinearGradient(0, height, width, 0);
+-  primary.addColorStop(0, "#f9fffe");
+-  primary.addColorStop(0.52, "#edfaff");
+-  primary.addColorStop(1, "#fff8fe");
++  primary.addColorStop(0, dark ? "#141c26" : "#f9fffe");
++  primary.addColorStop(0.52, dark ? "#1b2433" : "#edfaff");
++  primary.addColorStop(1, dark ? "#241e30" : "#fff8fe");
+   context.fillStyle = primary;
+   context.fillRect(0, 0, width, height);
+ 
+   const overlay = context.createLinearGradient(0, 0, width, height);
+-  overlay.addColorStop(0, "rgba(255, 246, 252, 0.34)");
+-  overlay.addColorStop(1, "rgba(219, 246, 255, 0.40)");
++  overlay.addColorStop(0, dark ? "rgba(103, 73, 125, 0.08)" : "rgba(255, 246, 252, 0.34)");
++  overlay.addColorStop(1, dark ? "rgba(51, 110, 139, 0.10)" : "rgba(219, 246, 255, 0.40)");
+   context.fillStyle = overlay;
+   context.fillRect(0, 0, width, height);
+-  context.fillStyle = "rgba(255, 255, 255, 0.48)";
++  context.fillStyle = dark ? "rgba(0, 0, 0, 0.10)" : "rgba(255, 255, 255, 0.48)";
+   context.fillRect(0, 0, width, height);
+ 
+   const random = makeSeededRandom(width * 73856093 ^ height * 19349663);
+@@ -105,7 +105,7 @@
+       const dy = (y - height * 0.5) / height * 2;
+       const edgeDistance = Math.max(0.28, dx * dx + dy * dy);
+       const size = baseSize * (0.72 + random() * 0.46) * edgeDistance;
+-      const alpha = (0.08 + random() * 0.13) * Math.min(1.25, edgeDistance + 0.25);
++      const alpha = (0.08 + random() * 0.13) * Math.min(1.25, edgeDistance + 0.25) * (dark ? 0.35 : 1);
+       drawTriangle(
+         x,
+         y,
+--- a/engine/src/engine/Haruki3DEngine.ts
++++ b/engine/src/engine/Haruki3DEngine.ts
+@@ -807,6 +807,7 @@
+   private readonly sceneReference = new THREE.Group();
+   private capturePresentationEnabled: boolean | null = null;
+   private captureBackgroundTexture: THREE.CanvasTexture | null = null;
++  private backgroundTheme: "light" | "dark" = "light";
+   private viewportWidth = 0;
+   private viewportHeight = 0;
+   private viewportPixelRatio = 0;
+@@ -1758,6 +1759,12 @@
+     return Promise.resolve();
+   }
+ 
++  setBackgroundTheme(theme: "light" | "dark") {
++    if (this.backgroundTheme === theme) return;
++    this.backgroundTheme = theme;
++    this.updateCaptureBackgroundTexture(this.viewportWidth || undefined, this.viewportHeight || undefined);
++  }
++
+   setViewportSize(width: number, height: number) {
+     const viewportMinimum = this.ownsCanvas ? 320 : 1;
+     const nextWidth = Math.max(Math.trunc(width) || 0, viewportMinimum);
+@@ -2652,7 +2659,8 @@
+     this.captureBackgroundTexture?.dispose();
+     this.captureBackgroundTexture = createCaptureBackgroundTexture(
+       textureWidth,
+-      textureHeight
++      textureHeight,
++      this.backgroundTheme
+     );
+     this.scene.background = this.captureBackgroundTexture;
+   }
+--- a/engine/src/base/browserCharacterRuntime.ts
++++ b/engine/src/base/browserCharacterRuntime.ts
+@@ -6,6 +6,7 @@
+   play(): void;
+   pause(): void;
+   resize(width: number, height: number): void;
++  setBackgroundTheme(theme: "light" | "dark"): void;
+   setCharacterYawDegrees(degrees: number): void;
+   setViewYawDegrees(degrees: number): void;
+   setViewZoom(zoom: number): void;
+@@ -22,6 +23,7 @@
+   setViewZoom(zoom: number): void;
+   setViewHeightOffset(metres: number): void;
+   setViewportSize(width: number, height: number): void;
++  setBackgroundTheme?(theme: "light" | "dark"): void;
+   stepRuntimeFrame(
+     deltaSeconds: number,
+     options: { advanceAnimation: boolean; elapsedTime?: number }
+@@ -138,6 +140,11 @@
+       engine.setViewportSize(width, height);
+       engine.renderFrame();
+     },
++    setBackgroundTheme(theme) {
++      assertActive();
++      engine.setBackgroundTheme?.(theme);
++      if (!running) engine.renderFrame();
++    },
+     setCharacterYawDegrees(degrees) {
+       assertActive();
+       engine.setCharacterYawDegrees(degrees);

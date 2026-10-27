@@ -1,0 +1,154 @@
+--- a/engine/src/base/browserCharacterRuntime.ts
++++ b/engine/src/base/browserCharacterRuntime.ts
+@@ -7,6 +7,7 @@
+   pause(): void;
+   resize(width: number, height: number): void;
+   setBackgroundTheme(theme: "light" | "dark"): void;
++  setViewportInsets(top: number, right: number, bottom: number, left: number): void;
+   setCharacterYawDegrees(degrees: number): void;
+   setViewYawDegrees(degrees: number): void;
+   setViewZoom(zoom: number): void;
+@@ -24,6 +25,7 @@
+   setViewHeightOffset(metres: number): void;
+   setViewportSize(width: number, height: number): void;
+   setBackgroundTheme?(theme: "light" | "dark"): void;
++  setViewportInsets?(top: number, right: number, bottom: number, left: number): void;
+   stepRuntimeFrame(
+     deltaSeconds: number,
+     options: { advanceAnimation: boolean; elapsedTime?: number }
+@@ -135,6 +137,11 @@
+       lastFrameMs = null;
+       accumulator = 0;
+     },
++    setViewportInsets(top, right, bottom, left) {
++      assertActive();
++      engine.setViewportInsets?.(top, right, bottom, left);
++      if (!running) engine.renderFrame();
++    },
+     resize(width, height) {
+       assertActive();
+       engine.setViewportSize(width, height);
+--- a/engine/src/engine/Haruki3DEngine.ts
++++ b/engine/src/engine/Haruki3DEngine.ts
+@@ -808,6 +808,7 @@
+   private capturePresentationEnabled: boolean | null = null;
+   private captureBackgroundTexture: THREE.CanvasTexture | null = null;
+   private backgroundTheme: "light" | "dark" = "light";
++  private viewportInsets = [0, 0, 0, 0];
+   private viewportWidth = 0;
+   private viewportHeight = 0;
+   private viewportPixelRatio = 0;
+@@ -1765,6 +1766,24 @@
+     this.updateCaptureBackgroundTexture(this.viewportWidth || undefined, this.viewportHeight || undefined);
+   }
+ 
++  /** Frame the character in the host safe area while rendering the whole canvas. */
++  setViewportInsets(top: number, right: number, bottom: number, left: number) {
++    this.viewportInsets = [top, right, bottom, left].map(value => Number.isFinite(value) ? Math.max(0, value) : 0);
++    this.updateViewportProjection();
++  }
++
++  private updateViewportProjection() {
++    const width = Math.max(1, this.viewportWidth);
++    const height = Math.max(1, this.viewportHeight);
++    const top = Math.min(this.viewportInsets[0], height - 1);
++    const right = Math.min(this.viewportInsets[1], width - 1);
++    const bottom = Math.min(this.viewportInsets[2], height - top - 1);
++    const left = Math.min(this.viewportInsets[3], width - right - 1);
++    // Negative offsets expand the frustum beyond the safe rectangle instead of
++    // clipping the model there. The profile pose, zoom and drag remain unchanged.
++    this.camera.setViewOffset(width - left - right, height - top - bottom, -left, -top, width, height);
++  }
++
+   setViewportSize(width: number, height: number) {
+     const viewportMinimum = this.ownsCanvas ? 320 : 1;
+     const nextWidth = Math.max(Math.trunc(width) || 0, viewportMinimum);
+@@ -1781,13 +1800,12 @@
+     ) {
+       return;
+     }
+-    this.camera.aspect = nextWidth / nextHeight;
+-    this.camera.updateProjectionMatrix();
++    this.viewportWidth = nextWidth;
++    this.viewportHeight = nextHeight;
++    this.updateViewportProjection();
+     this.renderer.setPixelRatio(nextPixelRatio);
+     this.renderer.setSize(nextWidth, nextHeight, this.ownsCanvas);
+     this.updateCaptureBackgroundTexture(nextWidth, nextHeight);
+-    this.viewportWidth = nextWidth;
+-    this.viewportHeight = nextHeight;
+     this.viewportPixelRatio = nextPixelRatio;
+   }
+ 
+--- /dev/null
++++ b/engine/tests/viewport-framing.test.mjs
+@@ -0,0 +1,69 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++import * as THREE from 'three';
++import { Haruki3DEngineCore } from '../dist/haruki-3d-engine-internal.js';
++
++function fixture(width, height) {
++  const engine = Object.create(Haruki3DEngineCore.prototype);
++  engine.camera = new THREE.PerspectiveCamera(35, width / height, 0.1, 100);
++  engine.camera.position.set(0, 1, 4.5);
++  engine.camera.lookAt(0, 1, 0);
++  engine.camera.updateMatrixWorld();
++  engine.viewportInsets = [0, 0, 0, 0];
++  engine.viewportWidth = width;
++  engine.viewportHeight = height;
++  engine.viewportPixelRatio = 0;
++  engine.ownsCanvas = false;
++  engine.renderer = { setPixelRatio() {}, setSize() {} };
++  engine.updateCaptureBackgroundTexture = () => {};
++  return engine;
++}
++function pixel(point, camera, width, height) {
++  const p = point.clone().project(camera);
++  return [(p.x + 1) * width / 2, (1 - p.y) * height / 2];
++}
++function close(a, b) { assert.ok(Math.abs(a - b) < 1e-7, `${a} != ${b}`); }
++function compareSafeFrame(engine, width, height, [top, right, bottom, left]) {
++  const safeWidth = width - left - right, safeHeight = height - top - bottom;
++  const reference = engine.camera.clone();
++  reference.clearViewOffset(); reference.aspect = safeWidth / safeHeight; reference.updateProjectionMatrix();
++  for (const world of [new THREE.Vector3(0, 1, 0), new THREE.Vector3(-.4, 1.7, .2), new THREE.Vector3(.4, .1, -.1)]) {
++    const safe = pixel(world, reference, safeWidth, safeHeight);
++    const full = pixel(world, engine.camera, width, height);
++    close(full[0], left + safe[0]); close(full[1], top + safe[1]);
++  }
++  return reference;
++}
++test('portrait, landscape and asymmetric panes retain the safe-area framing', () => {
++  for (const [w, h, insets] of [[402, 874, [164, 0, 83, 0]], [874, 402, [44, 59, 21, 59]], [1024, 768, [50, 320, 20, 0]], [700, 800, [0, 0, 0, 0]]]) {
++    const engine = fixture(w, h), position = engine.camera.position.clone();
++    engine.setViewportInsets(...insets);
++    compareSafeFrame(engine, w, h, insets);
++    assert.ok(position.equals(engine.camera.position));
++  }
++});
++test('the expanded frustum allows a model to move beyond the safe rectangle', () => {
++  const engine = fixture(402, 874), insets = [164, 0, 83, 0];
++  engine.setViewportInsets(...insets);
++  const reference = compareSafeFrame(engine, 402, 874, insets);
++  const world = new THREE.Vector3(0, 1.15, .5).unproject(reference);
++  const full = pixel(world, engine.camera, 402, 874);
++  assert.ok(full[1] > 0 && full[1] < insets[0]);
++});
++test('resize and camera changes preserve the safe center without resetting zoom or pan', () => {
++  const engine = fixture(402, 874);
++  engine.setViewportInsets(164, 0, 83, 0);
++  engine.camera.position.set(.5, 1.2, 2.3); engine.camera.lookAt(0, 1.2, 0); engine.camera.updateMatrixWorld();
++  globalThis.window = { devicePixelRatio: 2 };
++  engine.setViewportSize(874, 402);
++  engine.setViewportInsets(44, 59, 21, 59);
++  compareSafeFrame(engine, 874, 402, [44, 59, 21, 59]);
++  assert.deepEqual(engine.camera.position.toArray(), [.5, 1.2, 2.3]);
++});
++test('invalid or temporarily oversized insets cannot produce an invalid camera', () => {
++  const engine = fixture(20, 10);
++  engine.setViewportInsets(Infinity, -20, NaN, 0);
++  compareSafeFrame(engine, 20, 10, [0, 0, 0, 0]);
++  engine.setViewportInsets(900, 800, 700, 600);
++  assert.ok(engine.camera.projectionMatrix.elements.every(Number.isFinite));
++});

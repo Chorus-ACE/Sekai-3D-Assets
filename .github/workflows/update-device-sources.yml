@@ -1,0 +1,80 @@
+name: Update local 3D wardrobes
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+    inputs:
+      region:
+        description: Region to refresh
+        type: choice
+        options: [all, jp, en, tw, kr, cn]
+        default: all
+permissions:
+  contents: write
+concurrency:
+  group: device-source-publication
+  cancel-in-progress: false
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # A queued dispatch's event SHA can precede the previous run's metadata
+          # commit. Resolve the branch tip when the serialized job actually starts.
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install requests==2.32.3 pycryptodome==3.23.0 msgpack==1.1.0
+      - name: Test dependency and publication contracts
+        run: |
+          python -m unittest discover -s tests -p 'test_*.py' -v
+          node --test viewer/tests/*.test.mjs
+      - uses: actions/cache@v4
+        with:
+          path: .vendor
+          key: device-metadata-v2-1e0abc65-523a3659
+      - name: Build metadata-only Haruki resolver
+        run: bash scripts/setup-device-sources.sh
+      - name: Refresh independent regional catalogs
+        id: refresh
+        continue-on-error: true
+        env:
+          REGION: ${{ inputs.region || 'all' }}
+        run: |
+          mkdir -p .work
+          REGIONS="$REGION"
+          if [[ "$REGION" == all ]]; then REGIONS='jp en tw kr cn'; fi
+          python scripts/device_wardrobes.py --regions $REGIONS > .work/device-source-summary.jsonl
+      - name: Publish completed regional catalogs
+        # Each region publishes only after its complete dependency plan is available.
+        # A failed region retains its preceding catalog; other regions can advance.
+        if: always() && (steps.refresh.outcome == 'success' || steps.refresh.outcome == 'failure')
+        run: |
+          cat .work/device-source-summary.jsonl
+          cat .work/device-source-summary.jsonl >> "$GITHUB_STEP_SUMMARY"
+          if [[ -d device ]]; then
+            git add device
+            if ! git diff --cached --quiet; then
+              git config user.name 'github-actions[bot]'
+              git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+              git commit -m 'Update regional device 3D source catalogs'
+              git pull --rebase origin main
+              git push origin HEAD:main
+            fi
+          fi
+      - name: Surface regional failures
+        if: steps.refresh.outcome == 'failure'
+        run: exit 1

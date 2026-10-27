@@ -1,0 +1,9 @@
+.work/
+.vendor/
+.venv/
+__pycache__/
+node_modules/
+.DS_Store
+
+tools/DeviceSourceRegistry/bin/
+tools/DeviceSourceRegistry/obj/
